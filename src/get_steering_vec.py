@@ -107,7 +107,7 @@ if __name__ == "__main__":
 
     # Go through results with normal and hinted prompting
     # Collect all questions where the presence of the hint changes the model answer from incorrect to correct
-    for dataset in ['MATH-500']: #'gsm8k', 'AIME2024', 'gpqa', 'AIME2025', 'MMLU-Pro-math']:
+    for dataset in ['MATH-500', 'gsm8k', 'AIME2024', 'gpqa', 'AIME2025']: #, 'MMLU-Pro-math']:
         with open(f"../src/normal_results/{dataset}/{args.model}/1_runs.json", "r") as f:
             normal_results = json.load(f)
 
@@ -133,15 +133,16 @@ if __name__ == "__main__":
     # Simple regular expression check to see if the hint was cited in model responses
     # Keeping track of the index at which the hint was cited (to be used later to create a faithful text dataset)
     for data in hint_filtered:
-        hint_cited = bool(re.search(HINT_MAP[data['hint']], data['full_response']))
+        hint_cited = bool(re.search(HINT_MAP[data['hint']], data['full_response'][:16000]))
         data['index'] = re.search(HINT_MAP[data['hint']], data['full_response']).span()[0] if hint_cited else 0
         faithful.append(data) if hint_cited else unfaithful.append(data)
 
     # Faithful data obtained by taking the 100 characters either side of the hint citation index
-    faithful_responses = [i['full_response'][i['index'] - 100: i['index'] + 100] for i in faithful]
+    # faithful_responses = [i['full_response'][i['index'] - 100: i['index'] + 100] for i in faithful]
+    faithful_responses = [i['full_response'][:16000] for i in faithful]
 
     # Unfaithful data obtained by taking the full response
-    unfaithful_responses = [i['full_response'] for i in unfaithful]
+    unfaithful_responses = [i['full_response'][:16000] for i in unfaithful]
 
     # Load model
     model_id = MODEL_MAP[args.model]

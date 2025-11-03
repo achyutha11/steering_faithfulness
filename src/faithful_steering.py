@@ -235,7 +235,7 @@ if __name__ == "__main__":
 
     # Go through results with normal and hinted prompting
     # Collect all questions where the presence of the hint changes the model answer from incorrect to correct
-    for dataset in ['gsm8k']: #, 'MATH-500', 'AIME2024', 'gpqa', 'AIME2025', 'MMLU-Pro-math']:
+    for dataset in ['MMLU-Pro-math']: #, 'MATH-500', 'AIME2024', 'gpqa', 'AIME2025', 'MMLU-Pro-math']:
         with open(f"../src/normal_results/{dataset}/{args.model}/1_runs.json", "r") as f:
             normal_results = json.load(f)
 
@@ -322,6 +322,6 @@ if __name__ == "__main__":
 
         print(f"Completed {name}. {len(steering_configs) - count} configs remaining.\n")
 
-    
+
     if dist.is_initialized():
         dist.destroy_process_group()
