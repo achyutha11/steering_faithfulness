@@ -39,7 +39,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--dataset", choices=DATASET_MAP.keys(), default="MATH-500")
     parser.add_argument("--model", choices=MODEL_MAP.keys(), default="qwen3-8b")
-    parser.add_argument("--step")
+    parser.add_argument("--step", type=int, help="To be used when dataset is openr1-math. Refers to the specific set of 2500 questions that will be used. 0 -> 0 to 2500, 1 -> 2500 to 5000, and so on.")
     parser.add_argument(
         "--mode", type=str, choices=["normal", "hint", "hintaug", "unethical"], default="normal",
         help="normal: normal inference; hint: inference with professor hint; hintaug: inference with augmented prompt; unethical: inference with unethical prompt"
@@ -84,7 +84,7 @@ if __name__ == "__main__":
 
     print("Model successfully loaded\n")
 
-    # Keeping temperature 0 for reproducibility
+    # Keep temperature 0 (and set n = 1) for reproducibility
     sampling_params = SamplingParams(n=10, temperature=0.6, max_tokens=16384 - 1024)
 
     prompts = []

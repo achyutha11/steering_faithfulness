@@ -1,193 +1,225 @@
 import json
 import torch
 import argparse
-from model import load_model
-import re
+from transformers import AutoTokenizer, AutoConfig, GenerationConfig
 from tqdm import tqdm
-from torch.utils.data import DataLoader, Dataset
+from vllm import LLM, SamplingParams
 from utils import HINT_MAP, MODEL_MAP
-import pickle
 import os
+import re
+from functools import partial
 
-class ResponseDataset(Dataset):
+
+DEFAULT_BUDGET = 4096
+
+def apply_chat(prompt: str, tokenizer):
     """
-    Class to store text data from a particular trait.
+    Wraps a user prompt in the vLLM chat template.
     """
-    def __init__(self, texts, tokenizer):
-        self.encodings = tokenizer(
-            texts,
-            return_tensors='pt',
-            padding=True,
-            truncation=True
-        )
-
-    def __len__(self):
-        return self.encodings['input_ids'].size(0)
-
-    def __getitem__(self, idx):
-        return {key: tensor[idx] for key, tensor in self.encodings.items()}
+    conversations = [{"role": "user", "content": prompt}]
+    return tokenizer.apply_chat_template(
+        conversations,
+        tokenize=False,
+        add_generation_prompt=True
+    )
 
 
-def collate_fn(batch):
-    return {
-        key: torch.stack([example[key] for example in batch], dim=0)
-        for key in batch[0]
-    }
-
-
-def get_mean_acts(dataloader, layer, model):
+def make_params(n: int, budget: int, cfg) -> SamplingParams:
     """
-    Get the mean activations of the model on a set of prompts at a particular layer's residual stream.
-
-    Inputs:
-        - dataloader (DataLoader): DataLoader object containing set of prompts for analysis
-        - layer (int): Layer to be analyzed
-        - model: Model from which activations should be collected
-
-    Outputs:
-        - mean_acts (tensor): Mean last-token activations from the model at the specified layer on the provided set of prompts
+    Build SamplingParams from model config and given budget.
     """
-
-    final_acts = []
-
-    # Process data in batches
-    for batch in tqdm(dataloader):
-
-        input_ids = batch["input_ids"].to(model.device)
-        attention_mask = batch["attention_mask"].to(model.device)
-
-        # Run inputs through the model, and save hidden states
-        with torch.no_grad():
-            outputs = model(input_ids, attention_mask=attention_mask, output_hidden_states=True)
-
-        # Get activations at specified layer
-        hidden = outputs.hidden_states[layer].detach()
-
-        # Retrieve last-token activations specifically from each of the inputs in the batch
-        final_token_acts = hidden[torch.arange(hidden.size(0)), -1]
-        final_acts.append(final_token_acts.cpu())
-
-    # Concatenate activations from all inputs, then take mean across inputs
-    # Results in a 1 x D vector, where D is the dimension of the residual stream
-    final_acts = torch.cat(final_acts, dim=0)
-    mean_acts = final_acts.mean(dim=0)
-
-    torch.cuda.empty_cache()
-
-    return mean_acts
+    kw = {"n": n, "max_tokens": budget}
+    if hasattr(cfg, "temperature") and cfg.temperature is not None:
+        kw["temperature"] = cfg.temperature
+    if hasattr(cfg, "top_k") and cfg.top_k is not None:
+        kw["top_k"] = cfg.top_k
+    if hasattr(cfg, "top_p") and cfg.top_p is not None:
+        kw["top_p"] = cfg.top_p
+    return SamplingParams(**kw)
 
 
-def get_steering_vec(layer, dl1, dl2, model):
+class LinearInterventionHook():
+    def __init__(self, direction, weight):
+        self.direction = direction
+        self.weight = weight
+    def __call__(self, module, input, output):
+        # align dtype/device
+        ref = output[0] if isinstance(output, tuple) else output
+        self.direction = self.direction.type_as(ref)
+        if isinstance(output, tuple):
+            # reconstruct tuple: (modified_first, *rest)
+            modified = ref + self.direction.to(ref.device) * self.weight
+            return (modified,) + output[1:]
+        else:
+            return output + self.direction.to(output.device) * self.weight
+
+
+def add_steering(model, directions, weight, components=None):
+    if not components:
+        return
+    for component in components:
+        if component not in directions:
+            # silently skip if direction not provided for this component
+            continue
+        steering_vector = directions[component]
+        hook = LinearInterventionHook(steering_vector, weight)
+        eval(f"model.{component}.register_forward_hook(hook)")
+
+
+def parse_components_spec(spec: str, num_layers: int):
     """
-    Get steering vector for a desired trait for a particular layer.
-
-    Inputs:
-        - layer (int): Layer from which the steering vector is extracted
-        - dl1 (DataLoader): DataLoader object containing positive examples of the trait
-        - dl2 (DataLoader): DataLoader object containing negative examples of the trait
-        - model: Model for which we need a steering vector
-
-    Outputs:
-        - tensor: Steering vector for faithfulness
+    Parse strings like:
+      - 'attn0-1' (layers [0])
+      - 'mlp1-3'  (layers [1,2])
+      - 'attn'    (all attn layers)
+      - 'mlp'     (all mlp layers)
+      - 'attn0-1mlp1-3' (both)
+      - 'attnmlp' (everything)
+    Returns: sorted unique list of component paths:
+      'model.layers[i].self_attn.o_proj' and 'model.layers[i].mlp.down_proj'
     """
+    if not spec:
+        return []
 
-    # Retrieve mean activations for faithful and unfaithful data, and return the difference
-    dl1_acts = get_mean_acts(dl1, layer, model)
-    dl2_acts = get_mean_acts(dl2, layer, model)
-    return dl1_acts - dl2_acts
+    pattern = re.compile(r'(attn|mlp)(\d+(?:-\d+)?)?')
+    matches = list(pattern.finditer(spec))
+    if not matches:
+        raise ValueError(f"Unrecognized component spec: {spec}")
+
+    layers_to_attn = set()
+    layers_to_mlp  = set()
+
+    def expand_range(tok):
+        # tok: None | 'k' | 'k-m' (end exclusive)
+        if tok is None:
+            return list(range(num_layers))
+        if '-' in tok:
+            a, b = tok.split('-', 1)
+            s = int(a); e = int(b)
+        else:
+            s = int(tok); e = s + 1
+        s = max(0, s); e = min(num_layers, e)
+        if s >= e:
+            return []
+        return list(range(s, e))
+
+    for m in matches:
+        kind = m.group(1)
+        rng  = m.group(2)
+        layer_idxs = expand_range(rng)
+        if kind == 'attn':
+            layers_to_attn.update(layer_idxs)
+        else:
+            layers_to_mlp.update(layer_idxs)
+
+    components = []
+    for i in sorted(layers_to_attn):
+        components.append(f"model.layers[{i}].self_attn.o_proj")
+    for i in sorted(layers_to_mlp):
+        components.append(f"model.layers[{i}].mlp.down_proj")
+    return components
 
 
-def make_hook(alpha, steering_vec):
-    """
-    Build hook to steer model generation.
+def register_steering(hf_model, *, direction_path, alpha, components_spec):
+    inner = getattr(hf_model, "model", None)
+    if inner is None or not hasattr(inner, "layers"):
+        raise RuntimeError("Unexpected model structure: missing .model.layers")
+    num_layers = len(inner.layers)
 
-    Inputs:
-        - alpha (float): Scaling factor for steering vector
-        - steering_vec (tensor): Steering vector to be added during generation
-    Outputs:
-        - steering_hook (function): Function to be used for steering
-    """
-    def steering_hook(module, input, output):
-        if isinstance(output, torch.Tensor):
-            return output + alpha * steering_vec.to(output.device)
-
-        elif isinstance(output, tuple):
-            hidden = output[0]
-            hidden = hidden + alpha * steering_vec.to(hidden.device)
-            # return new tuple with modified first element
-            return (hidden,) + output[1:]
-
-    return steering_hook
+    directions = torch.load(direction_path, map_location="cpu")["post"]["direction"]
+    comps = parse_components_spec(components_spec, num_layers)
+    add_steering(
+        hf_model,
+        directions=directions,
+        weight=alpha,
+        components=comps,
+    )
 
 
-def run_steering_exp(name, model_name, model, layer, alpha, steering_vec, question_data):
-    """
-    Run the steering experiment at a particular layer given a vector and alpha value.
+# def make_hook(alpha, steering_vec):
+#     """
+#     Build hook to steer model generation.
 
-    Inputs:
-        name (str): Name for the experiment
-        model_name (str): Name for the model
-        model: Model to be used for generation
-        layer (int): Layer at which steering should be done
-        alpha (float): Amount by which steering vector should be scaled
-        steering_vec (tensor): Vector encoding a particular trait
-        question_data (lst): List of question prompt data
+#     Inputs:
+#         - alpha (float): Scaling factor for steering vector
+#         - steering_vec (tensor): Steering vector to be added during generation
+#     Outputs:
+#         - steering_hook (function): Function to be used for steering
+#     """
+#     def steering_hook(module, input, output):
+#         if isinstance(output, torch.Tensor):
+#             return output + alpha * steering_vec.to(output.device)
 
-    Outputs:
-        faithful_rate (float): Proportion of responses that are faithful when steering is applied with the specified parameters.
-    """
+#         elif isinstance(output, tuple):
+#             hidden = output[0]
+#             hidden = hidden + alpha * steering_vec.to(hidden.device)
+#             # return new tuple with modified first element
+#             return (hidden,) + output[1:]
 
-    # Running count of faithful responses
-    # faithful_count = 0
-    # List to record all steered generation text
-    all_decoded = []
-    batch_size = 8
+#     return steering_hook
 
-    questions = ["Problem: " + i['question'] + "\n\n" + "Please reason step by step, and put your final answer within \\boxed{}. " + i['hint'] + " " + i['gold'] for i in question_data]
 
-    # Add hook for steering generation
-    handle = model.model.layers[layer].register_forward_hook(make_hook(alpha, steering_vec))
+# def run_steering_exp(name, model_name, model, layer, alpha, steering_vec, question_data):
+#     """
+#     Run the steering experiment at a particular layer given a vector and alpha value.
 
-    # Iterate over prompts, generate in batches
-    for i in tqdm(range(0, len(questions), batch_size)):
-        batch_data = question_data[i:i+batch_size]
-        batch_prompts = questions[i:i+batch_size]
+#     Inputs:
+#         name (str): Name for the experiment
+#         model_name (str): Name for the model
+#         model: Model to be used for generation
+#         layer (int): Layer at which steering should be done
+#         alpha (float): Amount by which steering vector should be scaled
+#         steering_vec (tensor): Vector encoding a particular trait
+#         question_data (lst): List of question prompt data
 
-        # Get prompts into the correct format (same as original generation setting)
-        batch_prompts_formatted = [
-            tokenizer.apply_chat_template([{"role": "user", "content": prompt}],
-                                        tokenize=False, add_generation_prompt=True)
-            for prompt in batch_prompts
-        ]
+#     Outputs:
+#         faithful_rate (float): Proportion of responses that are faithful when steering is applied with the specified parameters.
+#     """
 
-        input_ids = tokenizer(batch_prompts_formatted, return_tensors="pt", padding=True, truncation=True).to(model.device)
+#     # List to record all steered generation text
+#     all_decoded = []
+#     batch_size = 8
 
-        with torch.no_grad():
-            outputs = model.generate(
-                **input_ids,
-                max_new_tokens=4096
-            )
+#     questions = ["Problem: " + i['question'] + "\n\n" + "Please reason step by step, and put your final answer within \\boxed{}. " + i['hint'] + " " + i['gold'] for i in question_data]
 
-        # Decode generation
-        decoded = tokenizer.batch_decode(outputs, skip_special_tokens=True)
-        # Filter out prompt to avoid overcounting faithful responses
-        responses = [{"response": x.split("<think>")[1], "prompt": y, "hint": HINT_MAP[z['hint']], "prediction": z['prediction'], "answer": z["gold"]} for x, y, z in zip(decoded, batch_prompts, batch_data)]
-        # Track generated responses
-        all_decoded.extend(responses)
+#     # Add hook for steering generation
+#     handle = model.model.layers[layer].register_forward_hook(make_hook(alpha, steering_vec))
 
-        # Update faithful count based on generated text
-        # If the model cites the hint anywhere in its response, it is considered faithful
-        # faithful_count += sum(bool(re.search(HINT_MAP[d['hint']], text)) for d, text in zip(batch_data, responses))
+#     # Iterate over prompts, generate in batches
+#     for i in tqdm(range(0, len(questions), batch_size)):
+#         batch_data = question_data[i:i+batch_size]
+#         batch_prompts = questions[i:i+batch_size]
 
-    handle.remove()
+#         # Get prompts into the correct format (same as original generation setting)
+#         batch_prompts_formatted = [
+#             tokenizer.apply_chat_template([{"role": "user", "content": prompt}],
+#                                         tokenize=False, add_generation_prompt=True)
+#             for prompt in batch_prompts
+#         ]
 
-    # Save steered text generations
-    os.makedirs(f"../results/steered_gens/{model_name}", exist_ok=True)
-    with open(f"../results/steered_gens/{model_name}/{name}_gen.json", "w") as f:
-        json.dump(all_decoded, f)
+#         input_ids = tokenizer(batch_prompts_formatted, return_tensors="pt", padding=True, truncation=True).to(model.device)
 
-    return
+#         with torch.no_grad():
+#             outputs = model.generate(
+#                 **input_ids,
+#                 max_new_tokens=4096
+#             )
 
+#         # Decode generation
+#         decoded = tokenizer.batch_decode(outputs, skip_special_tokens=True)
+#         # Filter out prompt to avoid overcounting faithful responses
+#         responses = [{"response": x.split("<think>")[1], "prompt": y, "hint": HINT_MAP[z['hint']], "prediction": z['prediction'], "answer": z["gold"]} for x, y, z in zip(decoded, batch_prompts, batch_data)]
+#         # Track generated responses
+#         all_decoded.extend(responses)
+
+#     handle.remove()
+
+#     # Save steered text generations
+#     os.makedirs(f"../results/steered_gens/{model_name}", exist_ok=True)
+#     with open(f"../results/steered_gens/{model_name}/{name}_gen.json", "w") as f:
+#         json.dump(all_decoded, f)
+
+#     return
 
 
 if __name__ == "__main__":
@@ -202,7 +234,7 @@ if __name__ == "__main__":
 
     # Go through results with normal and hinted prompting
     # Collect all questions where the presence of the hint changes the model answer from incorrect to correct
-    for dataset in ['gsm8k', 'MATH-500', 'AIME2024', 'gpqa', 'AIME2025', 'MMLU-Pro-math']:
+    for dataset in ['gsm8k']: #, 'MATH-500', 'AIME2024', 'gpqa', 'AIME2025', 'MMLU-Pro-math']:
         with open(f"../src/normal_results/{dataset}/{args.model}/1_runs.json", "r") as f:
             normal_results = json.load(f)
 
@@ -222,63 +254,69 @@ if __name__ == "__main__":
         for index in incor_to_cor:
             hint_filtered.append(hint_recs[index])
 
-    faithful = []
-    unfaithful = []
-
-    # Simple regular expression check to see if the hint was cited in model responses
-    # Keeping track of the index at which the hint was cited (to be used later to create a faithful text dataset)
-    for data in hint_filtered:
-        hint_cited = bool(re.search(HINT_MAP[data['hint']], data['full_response']))
-        data['index'] = re.search(HINT_MAP[data['hint']], data['full_response']).span()[0] if hint_cited else 0
-        faithful.append(data) if hint_cited else unfaithful.append(data)
-
-    # Faithful data obtained by taking the 100 characters either side of the hint citation index
-    faithful_responses = [i['full_response'][i['index'] - 100: i['index'] + 100] for i in faithful]
-
-    # Unfaithful data obtained by taking the full response
-    unfaithful_responses = [i['full_response'] for i in unfaithful]
-
     # Load model
     model_id = MODEL_MAP[args.model]
-    model, tokenizer = load_model(model_id)
     device = "cuda" if torch.cuda.is_available() else "cpu"
+    max_pos = AutoConfig.from_pretrained(model_id).max_position_embeddings
+    cfg = GenerationConfig.from_pretrained(model_id)
+    tokenizer = AutoTokenizer.from_pretrained(model_id)
 
-    # Ensure intermediate hidden states are tracked
-    model.config.output_hidden_states = True
+    llm = LLM(
+        model=model_id,
+        max_model_len=min(DEFAULT_BUDGET + 256, max_pos),
+        dtype='half'
+    )
 
-    # Create faithful and unfaithful dataloader objects
-    faithful_ds = ResponseDataset(faithful_responses, tokenizer)
-    faithful_dl = DataLoader(faithful_ds, batch_size=1, collate_fn=collate_fn)
+    steering_configs = []
 
-    unfaithful_ds = ResponseDataset(unfaithful_responses, tokenizer)
-    unfaithful_dl = DataLoader(unfaithful_ds, batch_size=1, collate_fn=collate_fn)
-
-    layer_list = args.layers
-    alpha_list = args.alphas
-
-    # results = {}
-
-    for layer in layer_list:
-
-        # Obtain steering vector
-        steering_vec = get_steering_vec(layer, faithful_dl, unfaithful_dl, model)
-
-        steering_configs = []
-
-        for alpha in alpha_list:
-            tup = (f"l{layer}_{alpha}", layer, alpha, steering_vec)
+    for layer in args.layers:
+        for alpha in args.alphas:
+            tup = (f"l{layer}_{alpha}", layer, alpha, f"../results/steering_vecs/{args.model}/sv_{layer}.pt")
             steering_configs.append(tup)
 
-        count = 0
+    count = 0
 
-        for name, layer_idx, alpha, v in steering_configs:
+    for name, layer, alpha, path in steering_configs:
 
-            run_steering_exp(name, args.model, model, layer_idx, alpha, v, hint_filtered)
+        steering = partial(
+            register_steering,
+            direction_path=path,
+            alpha=alpha,
+            components_spec=f"mlp{layer}",
+        )
 
-            count += 1
+        hf_model = llm.llm_engine.model_executor.driver_worker.model_runner.model
 
-            print(f"Completed {name}. {len(steering_configs) - count} configs remaining.\n")
+        # register hook for this layer only
+        handles = []
+        comps = [f"model.layers[{layer}].mlp.down_proj"]
+        directions = torch.load(path, map_location="cpu")["post"]["direction"]
+        for comp in comps:
+            if comp in directions:
+                hook = LinearInterventionHook(directions[comp], alpha)
+                h = eval(f"hf_model.{comp}.register_forward_hook(hook)")
+                handles.append(h)
 
-    # os.makedirs(f"../results/data/{args.model}", exist_ok=True)
-    # with open(f"../results/data/{args.model}/steering_results.pkl", "wb") as f:
-    #     pickle.dump(results, f)
+        # ADJUST LATER
+        sampling_params = SamplingParams(n=1, temperature=0.0, max_tokens=min(DEFAULT_BUDGET, max_pos - 512))
+
+        prompts = ["Problem: " + i['question'] + "\n\n" + "Please reason step by step, and put your final answer within \\boxed{}. " + i['hint'] + " " + i['gold'] for i in hint_filtered]
+
+        results = llm.generate(prompts=prompts, sampling_params=sampling_params)
+
+        for h in handles:
+            h.remove()
+
+        # Only one run needed when generation is deterministic
+        runs = {rid: [] for rid in range(10)}
+
+        responses = [{"response": i.outputs[0].text.split("<think>")[1], "prompt": i.prompt, "hint": j['hint'], "prediction": j['prediction'], "answer": j["gold"]} for i, j in zip(results, hint_filtered)]
+
+        # Save steered text generations
+        os.makedirs(f"../results/steered_gens/{args.model}", exist_ok=True)
+        with open(f"../results/steered_gens/{args.model}/{name}_gen.json", "w") as f:
+            json.dump(responses, f)
+
+        count += 1
+
+        print(f"Completed {name}. {len(steering_configs) - count} configs remaining.\n")
