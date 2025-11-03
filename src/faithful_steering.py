@@ -8,6 +8,7 @@ from utils import HINT_MAP, MODEL_MAP
 import os
 import re
 from functools import partial
+import torch.distributed as dist
 
 
 DEFAULT_BUDGET = 4096
@@ -310,7 +311,7 @@ if __name__ == "__main__":
         # Only one run needed when generation is deterministic
         runs = {rid: [] for rid in range(10)}
 
-        responses = [{"response": i.outputs[0].text.split("<think>")[1], "prompt": i.prompt, "hint": j['hint'], "prediction": j['prediction'], "answer": j["gold"]} for i, j in zip(results, hint_filtered)]
+        responses = [{"response": i.outputs[0].text, "prompt": i.prompt, "hint": j['hint'], "prediction": j['prediction'], "answer": j["gold"]} for i, j in zip(results, hint_filtered)]
 
         # Save steered text generations
         os.makedirs(f"../results/steered_gens/{args.model}", exist_ok=True)
@@ -320,3 +321,7 @@ if __name__ == "__main__":
         count += 1
 
         print(f"Completed {name}. {len(steering_configs) - count} configs remaining.\n")
+
+    
+    if dist.is_initialized():
+        dist.destroy_process_group()

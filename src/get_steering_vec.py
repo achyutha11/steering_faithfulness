@@ -173,4 +173,5 @@ if __name__ == "__main__":
             }
         }
 
+        os.makedirs(f"../results/steering_vecs/{args.model}", exist_ok=True)
         torch.save(directions_dict, f"../results/steering_vecs/{args.model}/sv_{layer}.pt")
