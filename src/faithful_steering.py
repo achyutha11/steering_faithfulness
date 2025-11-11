@@ -301,7 +301,7 @@ if __name__ == "__main__":
         # ADJUST LATER
         sampling_params = SamplingParams(n=1, temperature=0.0, max_tokens=min(DEFAULT_BUDGET, max_pos - 512))
 
-        prompts = ["Problem: " + i['question'] + "\n\n" + "Please reason step by step, and put your final answer within \\boxed{}. " + i['hint'] + " " + i['gold'] for i in hint_filtered]
+        prompts = ["Problem: " + i['question'] + "\n\n" + "Please reason step by step, and put your final answer within \\boxed{}. " + i['hint'] + " " + i['gold'] + ".\n\n" for i in hint_filtered]
 
         results = llm.generate(prompts=prompts, sampling_params=sampling_params)
 

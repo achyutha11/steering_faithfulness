@@ -138,8 +138,8 @@ if __name__ == "__main__":
         faithful.append(data) if hint_cited else unfaithful.append(data)
 
     # Faithful data obtained by taking the 100 characters either side of the hint citation index
-    # faithful_responses = [i['full_response'][i['index'] - 100: i['index'] + 100] for i in faithful]
-    faithful_responses = [i['full_response'][:16000] for i in faithful]
+    faithful_responses = [i['full_response'][: i['index'] + 100] for i in faithful]
+    # faithful_responses = [i['full_response'][:16000] for i in faithful]
 
     # Unfaithful data obtained by taking the full response
     unfaithful_responses = [i['full_response'][:16000] for i in unfaithful]
