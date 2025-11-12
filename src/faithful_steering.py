@@ -270,33 +270,40 @@ if __name__ == "__main__":
 
     steering_configs = []
 
-    for layer in args.layers:
-        for alpha in args.alphas:
-            tup = (f"l{layer}_{alpha}", layer, alpha, f"../results/steering_vecs/{args.model}/sv_{layer}.pt")
-            steering_configs.append(tup)
+    for alpha in args.alphas:
+        tup = (f"l{args.layers[0]}_{args.layers[1]}_{args.layers[2]}_{alpha}", args.layers, alpha, f"../results/steering_vecs/{args.model}/")
+        steering_configs.append(tup)
+
+    # for layer in args.layers:
+    #     for alpha in args.alphas:
+    #         tup = (f"l{layer}_{alpha}", layer, alpha, f"../results/steering_vecs/{args.model}/sv_{layer}.pt")
+    #         steering_configs.append(tup)
 
     count = 0
 
-    for name, layer, alpha, path in steering_configs:
+    for name, layers, alpha, path in steering_configs:
 
-        steering = partial(
-            register_steering,
-            direction_path=path,
-            alpha=alpha,
-            components_spec=f"mlp{layer}",
-        )
+        for layer in layers:
+            steering = partial(
+                register_steering,
+                direction_path=path,
+                alpha=alpha,
+                components_spec=f"mlp{layer}",
+            )
 
         hf_model = llm.llm_engine.model_executor.driver_worker.model_runner.model
 
-        # register hook for this layer only
         handles = []
-        comps = [f"model.layers[{layer}].mlp.down_proj"]
-        directions = torch.load(path, map_location="cpu")["post"]["direction"]
-        for comp in comps:
-            if comp in directions:
-                hook = LinearInterventionHook(directions[comp], alpha)
-                h = eval(f"hf_model.{comp}.register_forward_hook(hook)")
-                handles.append(h)
+        for layer in layers:
+            sv_path = path + f"sv_{layer}.pt"
+            # register hook for this layer only
+            comps = [f"model.layers[{layer}].mlp.down_proj"]
+            directions = torch.load(sv_path, map_location="cpu")["post"]["direction"]
+            for comp in comps:
+                if comp in directions:
+                    hook = LinearInterventionHook(directions[comp], alpha)
+                    h = eval(f"hf_model.{comp}.register_forward_hook(hook)")
+                    handles.append(h)
 
         # ADJUST LATER
         sampling_params = SamplingParams(n=1, temperature=0.0, max_tokens=min(DEFAULT_BUDGET, max_pos - 512))
