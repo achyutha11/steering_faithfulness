@@ -38,7 +38,7 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--dataset", choices=DATASET_MAP.keys(), default="MATH-500")
-    parser.add_argument("--model", choices=MODEL_MAP.keys(), default="qwen3-8b")
+    parser.add_argument("--model", choices=MODEL_MAP.keys(), default="deepseek-llama3-8b")
     parser.add_argument("--step", type=int, help="To be used when dataset is openr1-math. Refers to the specific set of 2500 questions that will be used. 0 -> 0 to 2500, 1 -> 2500 to 5000, and so on.")
     parser.add_argument(
         "--mode", type=str, choices=["normal", "hint", "hintaug", "unethical"], default="normal",
