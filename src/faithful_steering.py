@@ -235,7 +235,7 @@ if __name__ == "__main__":
 
     # Go through results with normal and hinted prompting
     # Collect all questions where the presence of the hint changes the model answer from incorrect to correct
-    for dataset in ['MMLU-Pro-math']: #, 'MATH-500', 'AIME2024', 'gpqa', 'AIME2025', 'MMLU-Pro-math']:
+    for dataset in ['openr1-math']: #, 'MATH-500', 'AIME2024', 'gpqa', 'AIME2025', 'MMLU-Pro-math']:
         with open(f"../src/normal_results/{dataset}/{args.model}/1_runs.json", "r") as f:
             normal_results = json.load(f)
 
@@ -321,8 +321,8 @@ if __name__ == "__main__":
         responses = [{"response": i.outputs[0].text, "prompt": i.prompt, "hint": j['hint'], "prediction": j['prediction'], "answer": j["gold"]} for i, j in zip(results, hint_filtered)]
 
         # Save steered text generations
-        os.makedirs(f"../results/steered_gens/{args.model}", exist_ok=True)
-        with open(f"../results/steered_gens/{args.model}/{name}_gen.json", "w") as f:
+        os.makedirs(f"../results/steered_gens/{args.model}/openr1-math/", exist_ok=True)
+        with open(f"../results/steered_gens/{args.model}/openr1-math/{name}_gen.json", "w") as f:
             json.dump(responses, f)
 
         count += 1
