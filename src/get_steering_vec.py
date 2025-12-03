@@ -76,6 +76,26 @@ def get_mean_acts(dataloader, layer, model):
     return mean_acts
 
 
+def get_window_mean_acts(dataloader, layer, model):
+    all_acts = []
+
+    for batch in tqdm(dataloader):
+        input_ids = batch["input_ids"].to(model.device)
+        attention_mask = batch["attention_mask"].to(model.device)
+
+        with torch.no_grad():
+            outputs = model(input_ids, attention_mask=attention_mask, output_hidden_states=True)
+
+        hidden = outputs.hidden_states[layer]
+
+        mean_seq_acts = hidden.mean(dim=1)
+
+        all_acts.append(mean_seq_acts.cpu())
+
+    final_acts = torch.cat(all_acts, dim=0)
+    return final_acts.mean(dim=0)
+
+
 def get_steering_vec(layer, dl1, dl2, model):
     """
     Get steering vector for a desired trait for a particular layer.
@@ -91,8 +111,8 @@ def get_steering_vec(layer, dl1, dl2, model):
     """
 
     # Retrieve mean activations for faithful and unfaithful data, and return the difference
-    dl1_acts = get_mean_acts(dl1, layer, model)
-    dl2_acts = get_mean_acts(dl2, layer, model)
+    dl1_acts = get_window_mean_acts(dl1, layer, model)
+    dl2_acts = get_window_mean_acts(dl2, layer, model)
     return dl1_acts - dl2_acts
 
 
@@ -139,11 +159,13 @@ if __name__ == "__main__":
 
     # Faithful data obtained by taking the 100 characters either side of the hint citation index
     # faithful_responses = [i['full_response'][i['index'] - 100: i['index'] + 100] for i in faithful]
-    faithful_responses = [i['full_response'][: i['index'] + 100] for i in faithful]
+    # faithful_responses = [i['full_response'][: i['index'] + 100] for i in faithful]
     # faithful_responses = [i['full_response'][:16000] for i in faithful]
+    faithful_responses = [i['full_response'][:500] for i in faithful]
+
 
     # Unfaithful data obtained by taking the full response
-    unfaithful_responses = [i['full_response'][:16000] for i in unfaithful]
+    unfaithful_responses = [i['full_response'][:500] for i in unfaithful]
 
     # Load model
     model_id = MODEL_MAP[args.model]
