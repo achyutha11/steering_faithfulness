@@ -228,6 +228,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--layers", nargs="+", type=int, help='Layers at which to test.')
     parser.add_argument("--alphas", nargs="+", type=float, help="Alpha values to test.")
+    parser.add_argument("--dataset", default="MMLU-Pro-Math")
     parser.add_argument("--model", choices=MODEL_MAP.keys(), default="deepseek-llama3-8b")
     args = parser.parse_args()
 
@@ -235,25 +236,25 @@ if __name__ == "__main__":
 
     # Go through results with normal and hinted prompting
     # Collect all questions where the presence of the hint changes the model answer from incorrect to correct
-    for dataset in ['MMLU-Pro-math']: #openr1-math']: #, 'MATH-500', 'AIME2024', 'gpqa', 'AIME2025', 'MMLU-Pro-math']:
-        with open(f"../src/normal_results/{dataset}/{args.model}/1_runs.json", "r") as f:
-            normal_results = json.load(f)
+    dataset = args.dataset
+    with open(f"../src/normal_results/{dataset}/{args.model}/1_runs.json", "r") as f:
+        normal_results = json.load(f)
 
-        with open(f"../src/hint_results/{dataset}/{args.model}/1_runs.json", "r") as f:
-            hint_results = json.load(f)
+    with open(f"../src/hint_results/{dataset}/{args.model}/1_runs.json", "r") as f:
+        hint_results = json.load(f)
 
-        incor_to_cor = []
-        normal_recs = normal_results['runs'][0]['records']
-        hint_recs = hint_results['runs'][0]['records']
-        reasoning_length = 15000
+    incor_to_cor = []
+    normal_recs = normal_results['runs'][0]['records']
+    hint_recs = hint_results['runs'][0]['records']
+    reasoning_length = 15000
 
-        # Filtering for reasoning length to ensure we don't just include questions where the model never completed its answer
-        for index, question in enumerate(normal_recs):
-            if not question['correct'] and hint_recs[index]['correct'] and question['reasoning_length'] < reasoning_length and str(question['prediction']).split("\\%")[0] != question['gold']:
-                incor_to_cor.append(index)
+    # Filtering for reasoning length to ensure we don't just include questions where the model never completed its answer
+    for index, question in enumerate(normal_recs):
+        if not question['correct'] and hint_recs[index]['correct'] and question['reasoning_length'] < reasoning_length and str(question['prediction']).split("\\%")[0] != question['gold']:
+            incor_to_cor.append(index)
 
-        for index in incor_to_cor:
-            hint_filtered.append(hint_recs[index])
+    for index in incor_to_cor:
+        hint_filtered.append(hint_recs[index])
 
     # Load model
     model_id = MODEL_MAP[args.model]
@@ -321,8 +322,8 @@ if __name__ == "__main__":
         responses = [{"response": i.outputs[0].text, "prompt": i.prompt, "hint": j['hint'], "prediction": j['prediction'], "answer": j["gold"]} for i, j in zip(results, hint_filtered)]
 
         # Save steered text generations
-        os.makedirs(f"../results/steered_gens/{args.model}/MMLU-Pro-Math/", exist_ok=True)
-        with open(f"../results/steered_gens/{args.model}/MMLU-Pro-Math/{name}_gen.json", "w") as f:
+        os.makedirs(f"../results/steered_gens/{args.model}/{args.dataset}/", exist_ok=True)
+        with open(f"../results/steered_gens/{args.model}/{args.dataset}/{name}_gen.json", "w") as f:
             json.dump(responses, f)
 
         count += 1
