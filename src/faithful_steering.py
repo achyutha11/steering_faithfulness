@@ -282,29 +282,32 @@ if __name__ == "__main__":
 
     count = 0
 
-    for name, layer, alpha, path in steering_configs:
+    # for name, layer, alpha, path in steering_configs:
 
-        # for layer in layers:
-        steering = partial(
-            register_steering,
-            direction_path=path,
-            alpha=alpha,
-            components_spec=f"mlp{layer}",
-        )
+    for alpha in args.alphas:
+
+        for layer in args.layers:
+            steering = partial(
+                register_steering,
+                direction_path=f"../results/steering_vecs/{args.model}/sv_{layer}.pt",
+                alpha=alpha,
+                components_spec=f"mlp{layer}",
+            )
 
         hf_model = llm.llm_engine.model_executor.driver_worker.model_runner.model
 
         handles = []
-        # for layer in layers:
-        # sv_path = path + f"sv_{layer}.pt"
-        # register hook for this layer only
-        comps = [f"model.layers[{layer}].mlp.down_proj"]
-        directions = torch.load(path, map_location="cpu")["post"]["direction"]
-        for comp in comps:
-            if comp in directions:
-                hook = LinearInterventionHook(directions[comp], alpha)
-                h = eval(f"hf_model.{comp}.register_forward_hook(hook)")
-                handles.append(h)
+
+        for layer in args.layers:
+            sv_path = f"../results/steering_vecs/{args.model}/sv_{layer}.pt"
+            # register hook for this layer only
+            comps = [f"model.layers[{layer}].mlp.down_proj"]
+            directions = torch.load(sv_path, map_location="cpu")["post"]["direction"]
+            for comp in comps:
+                if comp in directions:
+                    hook = LinearInterventionHook(directions[comp], alpha)
+                    h = eval(f"hf_model.{comp}.register_forward_hook(hook)")
+                    handles.append(h)
 
         # ADJUST LATER
         sampling_params = SamplingParams(n=1, temperature=0.0, max_tokens=min(DEFAULT_BUDGET, max_pos - 512))
@@ -323,12 +326,12 @@ if __name__ == "__main__":
 
         # Save steered text generations
         os.makedirs(f"../results/steered_gens/{args.model}/{args.dataset}/", exist_ok=True)
-        with open(f"../results/steered_gens/{args.model}/{args.dataset}/{name}_gen.json", "w") as f:
+        with open(f"../results/steered_gens/{args.model}/{args.dataset}/{alpha}_gen_all_layer.json", "w") as f:
             json.dump(responses, f)
 
         count += 1
 
-        print(f"Completed {name}. {len(steering_configs) - count} configs remaining.\n")
+        print(f"Completed {alpha} all layer steering. {len(steering_configs) - count} configs remaining.\n")
 
 
     if dist.is_initialized():
