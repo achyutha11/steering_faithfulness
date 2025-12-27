@@ -135,126 +135,42 @@ def register_steering(hf_model, *, direction_path, alpha, components_spec):
         weight=alpha,
         components=comps,
     )
-
-
-# def make_hook(alpha, steering_vec):
-#     """
-#     Build hook to steer model generation.
-
-#     Inputs:
-#         - alpha (float): Scaling factor for steering vector
-#         - steering_vec (tensor): Steering vector to be added during generation
-#     Outputs:
-#         - steering_hook (function): Function to be used for steering
-#     """
-#     def steering_hook(module, input, output):
-#         if isinstance(output, torch.Tensor):
-#             return output + alpha * steering_vec.to(output.device)
-
-#         elif isinstance(output, tuple):
-#             hidden = output[0]
-#             hidden = hidden + alpha * steering_vec.to(hidden.device)
-#             # return new tuple with modified first element
-#             return (hidden,) + output[1:]
-
-#     return steering_hook
-
-
-# def run_steering_exp(name, model_name, model, layer, alpha, steering_vec, question_data):
-#     """
-#     Run the steering experiment at a particular layer given a vector and alpha value.
-
-#     Inputs:
-#         name (str): Name for the experiment
-#         model_name (str): Name for the model
-#         model: Model to be used for generation
-#         layer (int): Layer at which steering should be done
-#         alpha (float): Amount by which steering vector should be scaled
-#         steering_vec (tensor): Vector encoding a particular trait
-#         question_data (lst): List of question prompt data
-
-#     Outputs:
-#         faithful_rate (float): Proportion of responses that are faithful when steering is applied with the specified parameters.
-#     """
-
-#     # List to record all steered generation text
-#     all_decoded = []
-#     batch_size = 8
-
-#     questions = ["Problem: " + i['question'] + "\n\n" + "Please reason step by step, and put your final answer within \\boxed{}. " + i['hint'] + " " + i['gold'] for i in question_data]
-
-#     # Add hook for steering generation
-#     handle = model.model.layers[layer].register_forward_hook(make_hook(alpha, steering_vec))
-
-#     # Iterate over prompts, generate in batches
-#     for i in tqdm(range(0, len(questions), batch_size)):
-#         batch_data = question_data[i:i+batch_size]
-#         batch_prompts = questions[i:i+batch_size]
-
-#         # Get prompts into the correct format (same as original generation setting)
-#         batch_prompts_formatted = [
-#             tokenizer.apply_chat_template([{"role": "user", "content": prompt}],
-#                                         tokenize=False, add_generation_prompt=True)
-#             for prompt in batch_prompts
-#         ]
-
-#         input_ids = tokenizer(batch_prompts_formatted, return_tensors="pt", padding=True, truncation=True).to(model.device)
-
-#         with torch.no_grad():
-#             outputs = model.generate(
-#                 **input_ids,
-#                 max_new_tokens=4096
-#             )
-
-#         # Decode generation
-#         decoded = tokenizer.batch_decode(outputs, skip_special_tokens=True)
-#         # Filter out prompt to avoid overcounting faithful responses
-#         responses = [{"response": x.split("<think>")[1], "prompt": y, "hint": HINT_MAP[z['hint']], "prediction": z['prediction'], "answer": z["gold"]} for x, y, z in zip(decoded, batch_prompts, batch_data)]
-#         # Track generated responses
-#         all_decoded.extend(responses)
-
-#     handle.remove()
-
-#     # Save steered text generations
-#     os.makedirs(f"../results/steered_gens/{model_name}", exist_ok=True)
-#     with open(f"../results/steered_gens/{model_name}/{name}_gen.json", "w") as f:
-#         json.dump(all_decoded, f)
-
-#     return
-
+    
 
 if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--layers", nargs="+", type=int, help='Layers at which to test.')
     parser.add_argument("--alphas", nargs="+", type=float, help="Alpha values to test.")
-    parser.add_argument("--dataset", default="MMLU-Pro-Math")
+    parser.add_argument("--datasets", default="MMLU-Pro-Math")
     parser.add_argument("--model", choices=MODEL_MAP.keys(), default="deepseek-llama3-8b")
+    parser.add_argument("--steer_all", action="store_true")
     args = parser.parse_args()
 
     hint_filtered = []
 
     # Go through results with normal and hinted prompting
     # Collect all questions where the presence of the hint changes the model answer from incorrect to correct
-    dataset = args.dataset
-    with open(f"../src/normal_results/{dataset}/{args.model}/1_runs.json", "r") as f:
-        normal_results = json.load(f)
-
-    with open(f"../src/hint_results/{dataset}/{args.model}/1_runs.json", "r") as f:
-        hint_results = json.load(f)
-
-    incor_to_cor = []
-    normal_recs = normal_results['runs'][0]['records']
-    hint_recs = hint_results['runs'][0]['records']
-    reasoning_length = 15000
-
-    # Filtering for reasoning length to ensure we don't just include questions where the model never completed its answer
-    for index, question in enumerate(normal_recs):
-        if not question['correct'] and hint_recs[index]['correct'] and question['reasoning_length'] < reasoning_length and str(question['prediction']).split("\\%")[0] != question['gold']:
-            incor_to_cor.append(index)
-
-    for index in incor_to_cor:
-        hint_filtered.append(hint_recs[index])
+    datasets = args.datasets
+    for dataset in datasets:
+        with open(f"../src/normal_results/{dataset}/{args.model}/1_runs.json", "r") as f:
+            normal_results = json.load(f)
+    
+        with open(f"../src/hint_results/{dataset}/{args.model}/1_runs.json", "r") as f:
+            hint_results = json.load(f)
+    
+        incor_to_cor = []
+        normal_recs = normal_results['runs'][0]['records']
+        hint_recs = hint_results['runs'][0]['records']
+        reasoning_length = 15000
+    
+        # Filtering for reasoning length to ensure we don't just include questions where the model never completed its answer
+        for index, question in enumerate(normal_recs):
+            if not question['correct'] and hint_recs[index]['correct'] and question['reasoning_length'] < reasoning_length and str(question['prediction']).split("\\%")[0] != question['gold']:
+                incor_to_cor.append(index)
+    
+        for index in incor_to_cor:
+            hint_filtered.append(hint_recs[index])
 
     # Load model
     model_id = MODEL_MAP[args.model]
@@ -269,69 +185,111 @@ if __name__ == "__main__":
         dtype='half'
     )
 
-    steering_configs = []
+    if not args.steer_all:
 
-    # for alpha in args.alphas:
-    #     tup = (f"l{args.layers[0]}_{args.layers[1]}_{args.layers[2]}_{alpha}", args.layers, alpha, f"../results/steering_vecs/{args.model}/")
-    #     steering_configs.append(tup)
-
-    for layer in args.layers:
-        for alpha in args.alphas:
-            tup = (f"l{layer}_{alpha}", layer, alpha, f"../results/steering_vecs/{args.model}/sv_{layer}.pt")
-            steering_configs.append(tup)
-
-    count = 0
-
-    # for name, layer, alpha, path in steering_configs:
-
-    for alpha in args.alphas:
-
+        steering_configs = []
+        
         for layer in args.layers:
+            for alpha in args.alphas:
+                tup = (f"l{layer}_{alpha}", layer, alpha, f"../results/steering_vecs/{args.model}/sv_{layer}.pt")
+                steering_configs.append(tup)
+
+        count = 0
+        
+        for name, layer, alpha, path in steering_configs:
+            
             steering = partial(
                 register_steering,
-                direction_path=f"../results/steering_vecs/{args.model}/sv_{layer}.pt",
+                direction_path=path,
                 alpha=alpha,
                 components_spec=f"mlp{layer}",
             )
-
-        hf_model = llm.llm_engine.model_executor.driver_worker.model_runner.model
-
-        handles = []
-
-        for layer in args.layers:
-            sv_path = f"../results/steering_vecs/{args.model}/sv_{layer}.pt"
+    
+            hf_model = llm.llm_engine.model_executor.driver_worker.model_runner.model
+    
+            handles = []
+    
             # register hook for this layer only
             comps = [f"model.layers[{layer}].mlp.down_proj"]
-            directions = torch.load(sv_path, map_location="cpu")["post"]["direction"]
+            directions = torch.load(path, map_location="cpu")["post"]["direction"]
             for comp in comps:
                 if comp in directions:
                     hook = LinearInterventionHook(directions[comp], alpha)
                     h = eval(f"hf_model.{comp}.register_forward_hook(hook)")
                     handles.append(h)
-
-        # ADJUST LATER
-        sampling_params = SamplingParams(n=1, temperature=0.0, max_tokens=min(DEFAULT_BUDGET, max_pos - 512))
-
-        prompts = ["Problem: " + i['question'] + "\n\n" + "Please reason step by step, and put your final answer within \\boxed{}. " + i['hint'] + " " + i['gold'] + ".\n\n" for i in hint_filtered]
-
-        results = llm.generate(prompts=prompts, sampling_params=sampling_params)
-
-        for h in handles:
-            h.remove()
-
-        # Only one run needed when generation is deterministic
-        runs = {rid: [] for rid in range(10)}
-
-        responses = [{"response": i.outputs[0].text, "prompt": i.prompt, "hint": j['hint'], "prediction": j['prediction'], "answer": j["gold"]} for i, j in zip(results, hint_filtered)]
-
-        # Save steered text generations
-        os.makedirs(f"../results/steered_gens/{args.model}/{args.dataset}/", exist_ok=True)
-        with open(f"../results/steered_gens/{args.model}/{args.dataset}/{alpha}_gen_all_layer.json", "w") as f:
-            json.dump(responses, f)
-
-        count += 1
-
-        print(f"Completed {alpha} all layer steering. {len(steering_configs) - count} configs remaining.\n")
+    
+            sampling_params = SamplingParams(n=1, temperature=0.0, max_tokens=min(DEFAULT_BUDGET, max_pos - 512))
+    
+            prompts = ["Problem: " + i['question'] + "\n\n" + "Please reason step by step, and put your final answer within \\boxed{}. " + i['hint'] + " " + i['gold'] + ".\n\n" for i in hint_filtered]
+    
+            results = llm.generate(prompts=prompts, sampling_params=sampling_params)
+    
+            for h in handles:
+                h.remove()
+    
+            responses = [{"response": i.outputs[0].text, "prompt": i.prompt, "hint": j['hint'], "prediction": j['prediction'], "answer": j["gold"]} for i, j in zip(results, hint_filtered)]
+    
+            # Save steered text generations
+            if len(args.datasets) == 1:
+                ds = args.datasets[0]
+            else:
+                ds = orig_ds
+        
+            os.makedirs(f"../results/steered_gens/{args.model}/{ds}/", exist_ok=True)
+            with open(f"../results/steered_gens/{args.model}/{ds}/l{layer}_{alpha}_gen_single_layer.json", "w") as f:
+                json.dump(responses, f)
+    
+            count += 1
+    
+            print(f"Completed {alpha} steering on layer {layer}. {len(steering_configs) - count} configs remaining.\n")
+    
+    else:
+        
+        for index, alpha in enumerate(args.alphas):
+            for layer in args.layers:
+                steering = partial(
+                    register_steering,
+                    direction_path=f"../results/steering_vecs/{args.model}/sv_{layer}.pt",
+                    alpha=alpha,
+                    components_spec=f"mlp{layer}",
+                )
+        
+            hf_model = llm.llm_engine.model_executor.driver_worker.model_runner.model
+    
+            handles = []
+    
+            for layer in args.layers:
+                sv_path = f"../results/steering_vecs/{args.model}/sv_{layer}.pt"
+                comps = [f"model.layers[{layer}].mlp.down_proj"]
+                directions = torch.load(sv_path, map_location="cpu")["post"]["direction"]
+                for comp in comps:
+                    if comp in directions:
+                        hook = LinearInterventionHook(directions[comp], alpha)
+                        h = eval(f"hf_model.{comp}.register_forward_hook(hook)")
+                        handles.append(h)
+    
+            sampling_params = SamplingParams(n=1, temperature=0.0, max_tokens=min(DEFAULT_BUDGET, max_pos - 512))
+    
+            prompts = ["Problem: " + i['question'] + "\n\n" + "Please reason step by step, and put your final answer within \\boxed{}. " + i['hint'] + " " + i['gold'] + ".\n\n" for i in hint_filtered]
+    
+            results = llm.generate(prompts=prompts, sampling_params=sampling_params)
+    
+            for h in handles:
+                h.remove()
+    
+            # Only one run needed when generation is deterministic
+            runs = {rid: [] for rid in range(10)}
+    
+            responses = [{"response": i.outputs[0].text, "prompt": i.prompt, "hint": j['hint'], "prediction": j['prediction'], "answer": j["gold"]} for i, j in zip(results, hint_filtered)]
+    
+            # Save steered text generations
+            os.makedirs(f"../results/steered_gens/{args.model}/orig_ds/", exist_ok=True)
+            with open(f"../results/steered_gens/{args.model}/orig_ds/{alpha}_gen_all_layer.json", "w") as f:
+                json.dump(responses, f)
+    
+            count += 1
+    
+            print(f"Completed {alpha} all layer steering. {len(steering_configs) - count} configs remaining.\n")
 
 
     if dist.is_initialized():

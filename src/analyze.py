@@ -9,16 +9,16 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", choices=MODEL_MAP.keys(), default="deepseek-llama3-8b")
-    parser.add_argument("--dataset", default="MMLU-Pro-Math")
+    # parser.add_argument("--dataset", default="MMLU-Pro-Math")
     args = parser.parse_args()
 
     results = {}
 
-    directory = f"../results/steered_gens/{args.model}/{args.dataset}/"
+    directory = f"../results/steered_gens/{args.model}/orig_ds/"
 
     for filename in os.listdir(directory):
 
-        if filename.endswith(".json"):
+        if filename.endswith("gen_all_layer.json"):
 
             filepath = os.path.join(directory, filename)
 
@@ -36,5 +36,5 @@ if __name__ == "__main__":
             results[name] = faithfulness_rate
 
     os.makedirs(f"../results/data/{args.model}", exist_ok=True)
-    with open(f"../results/data/{args.model}/steering_results_{args.dataset}.pkl", "wb") as f:
+    with open(f"../results/data/{args.model}/steering_results_all_layer_orig_ds.pkl", "wb") as f:
         pickle.dump(results, f)
