@@ -141,7 +141,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--layers", nargs="+", type=int, help='Layers at which to test.')
     parser.add_argument("--alphas", nargs="+", type=float, help="Alpha values to test.")
-    parser.add_argument("--datasets", default="MMLU-Pro-Math")
+    parser.add_argument("--datasets", nargs="+", default=["MMLU-Pro-Math"], type=str)
     parser.add_argument("--model", choices=MODEL_MAP.keys(), default="deepseek-llama3-8b")
     args = parser.parse_args()
 
