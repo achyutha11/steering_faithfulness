@@ -9,16 +9,19 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", choices=MODEL_MAP.keys(), default="deepseek-llama3-8b")
-    # parser.add_argument("--dataset", default="MMLU-Pro-Math")
+    parser.add_argument("--dataset", default="MMLU-Pro-Math")
+    parser.add_argument("--multi_layer", action="store_true")
     args = parser.parse_args()
 
     results = {}
 
-    directory = f"../results/steered_gens/{args.model}/orig_ds/"
+    layers = "multi_layer" if args.multi_layer else layers = "single_layer"
+
+    directory = f"../results/steered_gens/{args.model}/{args.dataset}/{layers}/"
 
     for filename in os.listdir(directory):
 
-        if filename.endswith("gen_all_layer.json"):
+        if filename.endswith(".json"):
 
             filepath = os.path.join(directory, filename)
 
@@ -35,6 +38,6 @@ if __name__ == "__main__":
             name = os.path.splitext(filename)[0]
             results[name] = faithfulness_rate
 
-    os.makedirs(f"../results/data/{args.model}", exist_ok=True)
-    with open(f"../results/data/{args.model}/steering_results_all_layer_orig_ds.pkl", "wb") as f:
+    os.makedirs(f"../results/data/{args.model}/{layers}/", exist_ok=True)
+    with open(f"../results/data/{args.model}/{layers}/steering_results_{args.dataset}.pkl", "wb") as f:
         pickle.dump(results, f)
