@@ -15,7 +15,10 @@ if __name__ == "__main__":
 
     results = {}
 
-    layers = "multi_layer" if args.multi_layer else layers = "single_layer"
+    if args.multi_layer:
+        layers = "multi_layer" 
+    else:
+        layers = "single_layer"
 
     directory = f"../results/steered_gens/{args.model}/{args.dataset}/{layers}/"
 
