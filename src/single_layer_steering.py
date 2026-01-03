@@ -189,6 +189,8 @@ if __name__ == "__main__":
             tup = (f"l{layer}_{alpha}", layer, alpha, f"../results/steering_vecs/{args.model}/sv_{layer}.pt")
             steering_configs.append(tup)
 
+    steering_configs.append((f"l{args.layers[0]}_0.0", layer, 0.0, f"../results/steering_vecs/{args.model}/sv_{args.layers[0]}.pt"))
+
     count = 0
 
     for name, layer, alpha, path in steering_configs:
